@@ -15,7 +15,7 @@ AVRDUDE = avrdude -c usbasp -p $(DEVICE) # edit this line for your programmer
 CFLAGS  = -Iusbdrv -I. -DDEBUG_LEVEL=0
 OBJECTS = usbdrv/usbdrv.o usbdrv/usbdrvasm.o usbdrv/oddebug.o main.o
 
-COMPILE = avr-gcc -Wall -Os -DF_CPU=$(F_CPU) $(CFLAGS) -mmcu=$(DEVICE)
+COMPILE = avr-gcc -Wall -O3 -ffast-math -DF_CPU=$(F_CPU) $(CFLAGS) -mmcu=$(DEVICE)
 
 ##############################################################################
 # Fuse values for particular devices
@@ -110,7 +110,7 @@ help:
 all: sampler-client hex
 
 sampler-client:
-	gcc -o sampler-client sampler-client.c -I/usr/local -L/usr/local `libusb-config --libs`
+	gcc -o sampler-client sampler-client.c -I/usr/local -L/usr/local `libusb-config --libs` -lpthread
 
 hex: main.hex
 
@@ -157,8 +157,8 @@ main.elf: usbdrv $(OBJECTS)	# usbdrv dependency only needed because we copy it
 
 main.hex: main.elf
 	rm -f main.hex main.eep.hex
-	avr-objcopy -j .text -j .data -O ihex main.elf main.hex
-	avr-size main.hex
+	avr-objcopy -j .text -j .data -O ihex main.elf main.hex # text is code, data is ram contents ( pre-defined )
+	avr-size --format=avr --mcu=$(DEVICE) main.elf
 
 # debugging targets:
 

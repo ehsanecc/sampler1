@@ -1,25 +1,34 @@
 #include <stdio.h>
+#include <pthread.h>
 #include <usb.h>
-     
-#define VENDOR_ID	0x16c0
-#define DEVICE_ID	0x03e8
+#include "share.h"
 
-#define BUFFER_SIZE 250
+#define BUFFER_SIZE	4096
 
-#if BUFFER_SIZE > 254
-	#error "BUFFER_SIZE could not be more than 254"
-#endif
+unsigned int br = 0, bt = 0; // byte rate, bytes transferred
+
+void trCalculator(void *ptr) { // transfer rate calculator
+	unsigned int pp;
+	while(1) {
+		pp = bt;
+		sleep(1); // 1 second sleep
+		br = bt - pp;
+		fprintf(stderr, "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b%dKsps", br/1024);
+	}
+}
 
 void main() {
-		usb_dev_handle  *handle = NULL;
- 		unsigned char buffer[BUFFER_SIZE]={0}, i;
- 		struct usb_bus      *bus;
-		struct usb_device   *dev;
-		int                 errorCode = -1, n=0;
+	usb_dev_handle  *handle = NULL;
+	pthread_t thread;
+	pthread_attr_t thread_attr;
+	unsigned char buffer[BUFFER_SIZE]={0}, i;
+	struct usb_bus      *bus;
+	struct usb_device   *dev;
+	int errorCode = -1, n=0;
 
- 		usb_init();
- 		usb_find_busses();
-    usb_find_devices();
+ 	usb_init();
+	usb_find_busses();
+	usb_find_devices();
     
     for(bus = usb_get_busses(); bus; bus = bus->next) {
     	for(dev = bus->devices; dev; dev = dev->next) {  /* iterate over all devices on all busses */
@@ -33,14 +42,19 @@ void main() {
     
     //usb_claim_interface(handle, 0);
     //usb_detach_kernel_driver_np(handle, 0);
-    
+    pthread_create(&thread, &thread_attr, (void*)trCalculator, NULL);
     do {
     	errorCode = usb_control_msg(handle, ((1 & 1) << 7) | ((1 & 3) << 5), 0x33, 0, 0, buffer, BUFFER_SIZE, 0);
- 			for(i=0;i<BUFFER_SIZE;i++) printf("%u\n", buffer[i]);
- 		} while(errorCode > 0);
+    	if(errorCode > 0)
+			bt += errorCode;
+			//printf("\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b%dsps", br);
+ 		/*for(i=0;i<BUFFER_SIZE;i++)
+			printf("%u\n", buffer[i]);*/
+ 	} while(errorCode > 0);
+ 	printf("\nerrorCode %d %s\n", errorCode, usb_strerror());
  		
- 		usb_close(handle);
- 		fprintf(stderr, "connection closed!\n");
+ 	usb_close(handle);
+ 	fprintf(stderr, "connection closed!\n");
 }
 
 

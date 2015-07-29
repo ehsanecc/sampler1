@@ -1,3 +1,15 @@
+/****************************************************************************************
+sampler1 is an USB Device based on AVR CPU with CPU clock 16MHz and it samples it's all 8
+ channels in less than 5 microseconds.
+It could use as an 20Ksps oscillscope( it's really less, but it's fairly good for an AVR )
+
+i plan to make sampler2 with an FPGA and a fast 12bit ADC ( about 100MHz speed at least )
+so sampler2 could use as an 10MHz oscillscope.
+
+i'm gonna determine an interface for sampler and this interface will use in all
+sampler versions ( as long as no special feature added to sampler )
+****************************************************************************************/
+
 #include <avr/io.h>
 #include <avr/wdt.h>
 #include <avr/interrupt.h>  /* for sei() */
@@ -6,26 +18,44 @@
 #include <avr/pgmspace.h>   /* required by usbdrv.h */
 #include "usbdrv.h"
 
-/************************************************************
-sampler1 is an USB Device based on AVR CPU with CPU clock
-16MHz and it samples it's all 8 channels in less than 5 micro seconds.
-It could use as an 20kHz oscillscope( it's really less, but it's fairly good for an AVR )
+#include "share.h"
 
-i plan to make sampler2 with an FPGA and a fast 12bit ADC ( about 100MHz speed at least )
-so sampler2 could use as an 10MHz oscillscope.
+#define _2BIT_RESOLUTION		((ADCH&0xC0)>>6)
+#define _4BIT_RESOLUTION		((ADCH&0xF0)>>4)
+#define _6BIT_RESOLUTION		((ADCH&0xFC)>>2)
+#define _8BIT_RESOLUTION		(ADCH)
+#define _10BIT_RESOLUTION		(unsigned int)((ADCH<<2)|(ADCL>>6))
 
-i'm gonna determine an interface for sampler and this interface will use in all
-sampler versions ( as long as no special feature added to sampler )
-*************************************************************/
+sampler1_configure config; // global config
 
-uchar samplesRemaining = 0;
+unsigned int samplesRemaining = 0;
+
+// delay for 16MHz clock
+void __delay_us(uint16_t us) {
+	asm volatile(
+			"mov r25, %B0"EOL
+			"L1: mov r24, %A0"EOL
+			"L2: dec r24"EOL
+			"nop;nop;nop;nop;"EOL
+			"nop;nop;nop;nop;"EOL
+			"nop;nop;nop;nop;"EOL
+			"nop;nop;nop;"EOL
+			"cpi r24, 0"EOL
+			"brne L2"EOL
+			"dec r25"EOL
+			"cpi r25, 0"EOL
+			"brne L1"EOL
+			:: "r"(us)
+			: "r24", "r25");
+}
 
 // Read the 8 most significant bits
 // of the AD conversion result
-uchar read_adc(uchar adc_input)
+unsigned int read_adc(uint8_t adc_input)
 {
 	ADMUX=adc_input | 0x60;
-	_delay_us(1);
+	//_delay_us(1);
+	asm("nop; nop; nop; nop;"); // slight delay
 	ADCSRA|=0x40;
 	while ((ADCSRA & 0x10)==0);
 	ADCSRA|=0x10;
@@ -33,38 +63,48 @@ uchar read_adc(uchar adc_input)
 	return ADCH;
 }
  
-usbMsgLen_t usbFunctionSetup(uchar setupData[8])
+usbMsgLen_t usbFunctionSetup(uint8_t setupData[8])
 {
-    usbRequest_t *rq = (void *)setupData;   // cast to structured data for parsing
+    usbRequest_t *rq = (void *)setupData;   	// cast to structured data for parsing
     
-    switch(rq->bRequest){
-    	case 0x33:														// request code for samples
-        samplesRemaining = rq->wLength.word;// store the amount of samples requested
-        return USB_NO_MSG;                  // tell driver to use usbFunctionRead()
-    	}
+    switch(rq->bRequest) {
+    	case SAMPLER1_USEEXTNADC:
+    		config.use_external_adc = true;
+	    case SAMPLER1_SETSAMRESO:
+	    	config.sample_resolution = rq->wValue.word;
+	    	break;
+	    case SAMPLER1_SETSAMRATE:
+	    	config.sample_rate = rq->wValue.word;
+	    	break;
+    	case SAMPLER1_GETSAMPLES:
+        samplesRemaining = rq->wLength.word;
+        return USB_NO_MSG; // this function should return data ( samples )
+    }
     
-    return 0;                               // ignore all unknown requests
+		return 0;                               	// ignore all unknown requests
 }
 
-uchar usbFunctionRead(uchar *samples, uchar len)
+/* i should write this function in assembley to make it more faster */
+uint8_t usbFunctionRead(uint8_t *samples, uint8_t len)
 {
-	uchar i;
-    
-	if(len > samplesRemaining)      // len is max chunk size
+	register uint8_t i; // make it CPU register to get faster code execution
+	
+	if(len > samplesRemaining)    // len is max chunk size
 		len = samplesRemaining;     // send an incomplete chunk
+		
 	samplesRemaining -= len;
-	for(i = 0; i < len; i++)
-		samples[i] = read_adc(0); 	// copy the data to the buffer
-
-	return len;                     // return real chunk size
+	for(i=0;i<len;i++)
+		samples[i] = 0;
+	
+	return len;                   // return real chunk size
 }
 
 void adcInit()
 {
-	// 1000.0 kHz ( 16Mhz F_CPU )
-	// Reference: AVCC pin
-	ADMUX=0x60;
-	ADCSRA=0x84;
+	// 1MHz ( @16Mhz )
+	// Ref : AVCC pin
+	ADMUX=0x60; // 0110 0000
+	ADCSRA=0x84;// 1000 0100  [ADCEN=1] [XTAL/16]
 }
 
 
@@ -72,19 +112,21 @@ void adcInit()
 
 int __attribute__((noreturn)) main(void)
 {
-		uchar   i;
+		uint8_t i=0;
+		
+		config.use_external_adc = false;
+		config.sample_rate = 0xffff; // maximum
+		config.sample_resolution = 8; // 8 bits
 
 		adcInit();
     usbInit();
     usbDeviceDisconnect();  /* enforce re-enumeration, do this while interrupts are disabled! */
-    i = 0;
-    while(--i){             /* fake USB disconnect for > 250 ms */
-        wdt_reset();
-        _delay_ms(1);
-    } usbDeviceConnect();
-    sei();
+    while(--i) { wdt_reset(); _delay_ms(1); } /* fake USB disconnect for > 250 ms */
     
-    for(;;) usbPoll();      /* main event loop */
+    usbDeviceConnect();
+    sei(); // enable interrupts
+    
+    while(1) usbPoll();     /* main event loop */
 }
 
 /* ------------------------------------------------------------------------- */
